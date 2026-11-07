@@ -1,12 +1,18 @@
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { RigConfig } from './config.js';
+import { parseLine } from './digest/read.js';
+import type { Status as RunStatus } from './digest/types.js';
 import { lastBeat, type Beat } from './heartbeat.js';
+
+export type Counts = Record<RunStatus, number>;
+export type Night = { night: string; counts: Counts | null };
 
 export type Status = {
   adapter: string;
   installed: string;
   lastBeat: Beat | null;
-  nights: string[];
+  nights: Night[];
 };
 
 // Nights on disk = runs/<YYYY-MM-DD>.jsonl, newest first.
@@ -22,11 +28,32 @@ export function nightsOnDisk(runsDir: string): string[] {
   }
 }
 
+// Counts of runs (valid lines) per status for one night: a job with 3 retries and 1 ok is
+// retry 3, ok 1. Counted from the lines, not from readNight rows: a row keeps only runs, retries
+// and the last status, so it cannot split ok from fail. Lines go through the same parseLine as
+// readNight, so bad lines are skipped here exactly as in the digest. Unreadable file: null
+// (the board shows —).
+export function countNight(runsDir: string, night: string): Counts | null {
+  let text: string;
+  try {
+    text = readFileSync(join(runsDir, `${night}.jsonl`), 'utf8');
+  } catch {
+    return null;
+  }
+  const counts: Counts = { ok: 0, retry: 0, fail: 0 };
+  for (const raw of text.split(/\r?\n/)) {
+    if (raw.trim() === '') continue;
+    const line = parseLine(raw);
+    if (line) counts[line.status]++;
+  }
+  return counts;
+}
+
 export function readStatus(config: RigConfig): Status {
   return {
     adapter: config.adapter,
     installed: config.installed,
     lastBeat: lastBeat(),
-    nights: nightsOnDisk(config.runsDir),
+    nights: nightsOnDisk(config.runsDir).map((night) => ({ night, counts: countNight(config.runsDir, night) })),
   };
 }
